@@ -1,0 +1,122 @@
+name: Helios Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install pynacl
+
+      - name: Prepare build dir
+        shell: pwsh
+        run: |
+          $env:VER = $env:GITHUB_REF_NAME.TrimStart('v')
+          echo "version=$env:VER" >> $env:GITHUB_ENV
+          New-Item -ItemType Directory -Path "build\$env:VER" -Force | Out-Null
+          # здесь должны быть твои файлы Helios; пока положим заглушку:
+          Set-Content "build\$env:VER\helios.txt" "Helios $env:VER"
+
+      - name: Pack tar.gz
+        run: |
+          python - <<'PY'
+          import tarfile, os, pathlib
+          ver = os.environ['version']
+          dist = pathlib.Path('dist'); dist.mkdir(exist_ok=True)
+          tarpath = dist / f'helios-core-{ver}.tar.gz'
+          with tarfile.open(tarpath, 'w:gz') as tar:
+              tar.add(f'build/{ver}', arcname='.')
+          print(tarpath)
+          PY
+
+      - name: Compute sha256
+        id: sha
+        run: |
+          python - <<'PY'
+          import hashlib, pathlib, os
+          p = pathlib.Path(f"dist/helios-core-{os.environ['version']}.tar.gz")
+          h = hashlib.sha256(p.read_bytes()).hexdigest()
+          (p.parent / (p.name + ".sha256")).write_text(h)
+          print(h)
+          PY
+
+      - name: Restore private key (from secret)
+        shell: pwsh
+        run: |
+          [IO.File]::WriteAllBytes("helios_release_private.key",[Convert]::FromBase64String("${{ secrets.HELIOS_PRIVKEY_B64 }}"))
+
+      - name: Sign tarball (Ed25519)
+        run: |
+          python - <<'PY'
+          from nacl import signing
+          import pathlib, os
+          ver = os.environ['version']
+          key = signing.SigningKey(pathlib.Path("helios_release_private.key").read_bytes())
+          data = pathlib.Path(f"dist/helios-core-{ver}.tar.gz").read_bytes()
+          sig = key.sign(data).signature
+          pathlib.Path(f"dist/helios-core-{ver}.tar.gz.sig").write_bytes(sig)
+          print("signed", len(sig))
+          PY
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Helios ${{ env.version }}
+          body: Helios ${{ env.version }}
+          files: |
+            dist/helios-core-${{ env.version }}.tar.gz
+            dist/helios-core-${{ env.version }}.tar.gz.sha256
+            dist/helios-core-${{ env.version }}.tar.gz.sig
+
+      - name: Update stable manifest on gh-pages
+        shell: pwsh
+        run: |
+          $VER = $env:version
+          $REL_BASE = "https://github.com/${{ github.repository }}/releases/download/v$VER"
+          git fetch origin gh-pages 2>$null
+          git checkout -B gh-pages origin/gh-pages 2>$null || git checkout -b gh-pages
+          New-Item -ItemType Directory -Path "helios\manifests" -Force | Out-Null
+          $releasedAt = (Get-Date).ToUniversalTime().ToString("s") + "Z"
+          $json = @"
+          {
+            "channel": "stable",
+            "version": "$VER",
+            "released_at": "$releasedAt",
+            "core": {
+              "url": "$REL_BASE/helios-core-$VER.tar.gz",
+              "sha256": "",
+              "sig": "$REL_BASE/helios-core-$VER.tar.gz.sig"
+            },
+            "min_client": "1.0.0",
+            "notes_url": "https://github.com/${{ github.repository }}/releases/tag/v$VER"
+          }
+          "@
+          $json | Out-File -Encoding utf8 "helios\manifests\stable.json" -Force
+          $sha = Get-Content "dist\helios-core-$VER.tar.gz.sha256" -Raw
+          (Get-Content "helios\manifests\stable.json" -Raw).Replace('"sha256": ""', ('"sha256": "'+$sha+'"')) | Set-Content "helios\manifests\stable.json"
+          git config user.name "github-actions"
+          git config user.email "actions@users.noreply.github.com"
+          git add helios\manifests\stable.json
+          git commit -m "Update stable manifest to $VER" || echo "No changes"
+          git push origin gh-pages

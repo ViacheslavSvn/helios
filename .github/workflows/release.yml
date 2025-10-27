@@ -90,7 +90,7 @@ jobs:
             dist/helios-core-${{ env.version }}.tar.gz.sha256
             dist/helios-core-${{ env.version }}.tar.gz.sig
 
-      - name: Update stable manifest on gh-pages
+         - name: Update stable manifest on gh-pages
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -103,9 +103,12 @@ jobs:
             git checkout -B gh-pages origin/gh-pages
           } else {
             git checkout --orphan gh-pages
-            git rm -rf . 2>$null
-            New-Item -ItemType Directory -Path . | Out-Null
+            # удаляем ВСЁ кроме .git
+            Get-ChildItem -Force | Where-Object { $_.Name -ne '.git' } | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
           }
+
+          # на всякий случай подчистим рабочее дерево (кроме .git)
+          Get-ChildItem -Force | Where-Object { $_.Name -ne '.git' } | Out-Null
 
           New-Item -ItemType Directory -Path "helios/manifests" -Force | Out-Null
           $releasedAt = (Get-Date).ToUniversalTime().ToString("s") + "Z"
@@ -130,3 +133,4 @@ jobs:
           git add helios/manifests/stable.json
           git commit -m "Update stable manifest to $VER" --allow-empty
           git push origin gh-pages
+

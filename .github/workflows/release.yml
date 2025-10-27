@@ -34,7 +34,7 @@ jobs:
           $env:VER = $env:GITHUB_REF_NAME.TrimStart('v')
           echo "version=$env:VER" >> $env:GITHUB_ENV
           New-Item -ItemType Directory -Path "build\$env:VER" -Force | Out-Null
-          # здесь должны быть твои файлы Helios; пока положим заглушку:
+          # TODO: сюда добавим реальные файлы Helios; пока заглушка:
           Set-Content "build\$env:VER\helios.txt" "Helios $env:VER"
 
       - name: Pack tar.gz
@@ -51,14 +51,12 @@ jobs:
 
       - name: Compute sha256
         id: sha
+        shell: pwsh
         run: |
-          python - <<'PY'
-          import hashlib, pathlib, os
-          p = pathlib.Path(f"dist/helios-core-{os.environ['version']}.tar.gz")
-          h = hashlib.sha256(p.read_bytes()).hexdigest()
-          (p.parent / (p.name + ".sha256")).write_text(h)
-          print(h)
-          PY
+          $p = "dist/helios-core-$env:version.tar.gz"
+          $h = (Get-FileHash $p -Algorithm SHA256).Hash.ToLower()
+          Set-Content -Path "$p.sha256" -Value $h -NoNewline
+          "sha=$h" >> $env:GITHUB_OUTPUT
 
       - name: Restore private key (from secret)
         shell: pwsh
@@ -92,11 +90,21 @@ jobs:
       - name: Update stable manifest on gh-pages
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
           $VER = $env:version
           $REL_BASE = "https://github.com/${{ github.repository }}/releases/download/v$VER"
-          git fetch origin gh-pages 2>$null
-          git checkout -B gh-pages origin/gh-pages 2>$null || git checkout -b gh-pages
-          New-Item -ItemType Directory -Path "helios\manifests" -Force | Out-Null
+          $SHA = "${{ steps.sha.outputs.sha }}"
+
+          git fetch origin | Out-Null
+          if (git ls-remote --heads origin gh-pages) {
+            git checkout -B gh-pages origin/gh-pages
+          } else {
+            git checkout --orphan gh-pages
+            git rm -rf . 2>$null
+            New-Item -ItemType Directory -Path . | Out-Null
+          }
+
+          New-Item -ItemType Directory -Path "helios/manifests" -Force | Out-Null
           $releasedAt = (Get-Date).ToUniversalTime().ToString("s") + "Z"
           $json = @"
           {
@@ -105,18 +113,17 @@ jobs:
             "released_at": "$releasedAt",
             "core": {
               "url": "$REL_BASE/helios-core-$VER.tar.gz",
-              "sha256": "",
+              "sha256": "$SHA",
               "sig": "$REL_BASE/helios-core-$VER.tar.gz.sig"
             },
             "min_client": "1.0.0",
             "notes_url": "https://github.com/${{ github.repository }}/releases/tag/v$VER"
           }
           "@
-          $json | Out-File -Encoding utf8 "helios\manifests\stable.json" -Force
-          $sha = Get-Content "dist\helios-core-$VER.tar.gz.sha256" -Raw
-          (Get-Content "helios\manifests\stable.json" -Raw).Replace('"sha256": ""', ('"sha256": "'+$sha+'"')) | Set-Content "helios\manifests\stable.json"
+          $json | Out-File -Encoding utf8 "helios/manifests/stable.json" -Force
+
           git config user.name "github-actions"
           git config user.email "actions@users.noreply.github.com"
-          git add helios\manifests\stable.json
-          git commit -m "Update stable manifest to $VER" || echo "No changes"
+          git add helios/manifests/stable.json
+          git commit -m "Update stable manifest to $VER" --allow-empty
           git push origin gh-pages

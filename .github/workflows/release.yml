@@ -6,10 +6,6 @@ on:
     tags:
       - 'v*.*.*'
 
-  push:
-    tags:
-      - 'v*.*.*'
-
 permissions:
   contents: write
 
@@ -42,7 +38,7 @@ jobs:
           # TODO: сюда добавим реальные файлы Helios; пока заглушка:
           Set-Content "build\$env:VER\helios.txt" "Helios $env:VER"
 
-         - name: Pack tar.gz
+      - name: Pack tar.gz
         shell: bash
         run: |
           python - <<'PY'
@@ -54,8 +50,6 @@ jobs:
               tar.add(f'build/{ver}', arcname='.')
           print(tarpath)
           PY
-
-
 
       - name: Compute sha256
         id: sha
@@ -71,7 +65,7 @@ jobs:
         run: |
           [IO.File]::WriteAllBytes("helios_release_private.key",[Convert]::FromBase64String("${{ secrets.HELIOS_PRIVKEY_B64 }}"))
 
-         - name: Sign tarball (Ed25519)
+      - name: Sign tarball (Ed25519)
         shell: bash
         run: |
           python - <<'PY'
@@ -84,7 +78,6 @@ jobs:
           pathlib.Path(f"dist/helios-core-{ver}.tar.gz.sig").write_bytes(sig)
           print("signed", len(sig))
           PY
-
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
